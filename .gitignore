@@ -1,0 +1,10 @@
+.android-sdk/
+.tooling/
+.tooling_fast/
+
+shadowtempmail/build/
+shadowtempmail/.dart_tool/
+shadowtempmail/.gradle/
+shadowtempmail/.flutter-plugins-dependencies
+
+*.log
