@@ -8,3 +8,6 @@ shadowtempmail/.gradle/
 shadowtempmail/.flutter-plugins-dependencies
 
 *.log
+*.env
+!*.env.example
+node_modules/

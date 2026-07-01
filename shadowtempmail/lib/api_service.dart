@@ -5,7 +5,8 @@ import 'package:http/http.dart' as http;
 import 'models.dart';
 
 class ApiService {
-  static const String baseUrl = "https://your-railway-url.up.railway.app";
+  static const String baseUrl =
+      "https://shadowtempmail-backend-production.up.railway.app";
 
   Future<TempAddress> createTempAddress(int expiryDays) async {
     final res = await http.post(

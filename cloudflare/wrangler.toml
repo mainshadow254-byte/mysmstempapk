@@ -1,0 +1,6 @@
+name = "shadowtempmail-email-worker"
+main = "shadowtempmail-email-worker.js"
+compatibility_date = "2026-06-30"
+
+[vars]
+RAILWAY_INBOUND_URL = "https://shadowtempmail-backend-production.up.railway.app/api/v1/inbound/cloudflare"
