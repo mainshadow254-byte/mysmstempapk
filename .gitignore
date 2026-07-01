@@ -11,3 +11,5 @@ shadowtempmail/.flutter-plugins-dependencies
 *.env
 !*.env.example
 node_modules/
+.wrangler/
+**/.wrangler/
