@@ -19,8 +19,12 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       expires_at TIMESTAMPTZ NOT NULL,
       last_used_at TIMESTAMPTZ DEFAULT NOW(),
-      is_active BOOLEAN DEFAULT TRUE
+      is_active BOOLEAN DEFAULT TRUE,
+      cloudflare_rule_id TEXT
     );
+
+    ALTER TABLE temp_addresses
+      ADD COLUMN IF NOT EXISTS cloudflare_rule_id TEXT;
 
     CREATE TABLE IF NOT EXISTS messages (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

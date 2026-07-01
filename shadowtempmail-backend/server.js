@@ -19,6 +19,11 @@ const DOMAIN = process.env.DOMAIN || "hezydark.site";
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const MAX_EXPIRY_DAYS = Number(process.env.MAX_EXPIRY_DAYS || 30);
 const DEFAULT_EXPIRY_DAYS = Number(process.env.DEFAULT_EXPIRY_DAYS || 1);
+const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID;
+const CLOUDFLARE_WORKER_NAME =
+  process.env.CLOUDFLARE_WORKER_NAME || "shadowtempmail-email-worker";
+const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
 const createLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -44,6 +49,81 @@ function clampExpiryDays(days) {
 
 function normalizeEmail(email) {
   return String(email || "").toLowerCase().trim();
+}
+
+function isEmailRoutingProvisioned() {
+  return Boolean(CLOUDFLARE_API_TOKEN && CLOUDFLARE_ZONE_ID);
+}
+
+async function cloudflareRequest(path, options = {}) {
+  if (!isEmailRoutingProvisioned()) {
+    throw new Error("Cloudflare Email Routing credentials are not configured");
+  }
+
+  const response = await fetch(`${CLOUDFLARE_API_BASE}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) {
+    const message =
+      data.errors?.map((error) => error.message).join("; ") ||
+      `Cloudflare API request failed with ${response.status}`;
+    throw new Error(message);
+  }
+
+  return data;
+}
+
+async function createEmailRoutingRule(email) {
+  if (!isEmailRoutingProvisioned()) {
+    return null;
+  }
+
+  const data = await cloudflareRequest(
+    `/zones/${CLOUDFLARE_ZONE_ID}/email/routing/rules`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: `ShadowTempMail ${email}`,
+        enabled: true,
+        matchers: [
+          {
+            type: "literal",
+            field: "to",
+            value: email,
+          },
+        ],
+        actions: [
+          {
+            type: "worker",
+            value: [CLOUDFLARE_WORKER_NAME],
+          },
+        ],
+        priority: 0,
+      }),
+    },
+  );
+
+  return data.result?.id || data.result?.tag || null;
+}
+
+async function deleteEmailRoutingRule(ruleId) {
+  if (!ruleId || !isEmailRoutingProvisioned()) {
+    return;
+  }
+
+  await cloudflareRequest(
+    `/zones/${CLOUDFLARE_ZONE_ID}/email/routing/rules/${ruleId}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 function extractVerificationCode(text) {
@@ -128,10 +208,31 @@ app.post("/api/v1/address", createLimiter, async (req, res) => {
       [email, localPart, accessToken, expiryDays],
     );
 
+    let cloudflareRuleId = null;
+    try {
+      cloudflareRuleId = await createEmailRoutingRule(email);
+      if (cloudflareRuleId) {
+        await pool.query(
+          "UPDATE temp_addresses SET cloudflare_rule_id = $1 WHERE id = $2",
+          [cloudflareRuleId, result.rows[0].id],
+        );
+      }
+    } catch (error) {
+      await pool.query("DELETE FROM temp_addresses WHERE id = $1", [
+        result.rows[0].id,
+      ]);
+      console.error("Create Cloudflare route error:", error);
+      return res.status(502).json({
+        success: false,
+        error: "Failed to provision email routing",
+      });
+    }
+
     res.json({
       success: true,
       address: {
         ...result.rows[0],
+        cloudflare_rule_id: cloudflareRuleId,
         message_count: 0,
         last_message_at: null,
       },
@@ -349,7 +450,7 @@ app.delete("/api/v1/address/:addressId", async (req, res) => {
     }
 
     const result = await pool.query(
-      "DELETE FROM temp_addresses WHERE id = $1 AND access_token = $2 RETURNING id",
+      "DELETE FROM temp_addresses WHERE id = $1 AND access_token = $2 RETURNING id, cloudflare_rule_id",
       [addressId, token],
     );
 
@@ -358,6 +459,12 @@ app.delete("/api/v1/address/:addressId", async (req, res) => {
         success: false,
         error: "Address not found",
       });
+    }
+
+    try {
+      await deleteEmailRoutingRule(result.rows[0].cloudflare_rule_id);
+    } catch (error) {
+      console.error("Delete Cloudflare route error:", error);
     }
 
     res.json({
@@ -512,6 +619,22 @@ app.get("/api/v1/recent/messages", async (req, res) => {
 
 cron.schedule("*/30 * * * *", async () => {
   try {
+    const expiredRoutes = await pool.query(`
+      SELECT cloudflare_rule_id
+      FROM temp_addresses
+      WHERE is_active = TRUE
+      AND expires_at <= NOW()
+      AND cloudflare_rule_id IS NOT NULL
+    `);
+
+    for (const row of expiredRoutes.rows) {
+      try {
+        await deleteEmailRoutingRule(row.cloudflare_rule_id);
+      } catch (error) {
+        console.error("Expired Cloudflare route cleanup failed:", error);
+      }
+    }
+
     await pool.query(`
       UPDATE temp_addresses
       SET is_active = FALSE
