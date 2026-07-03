@@ -77,4 +77,13 @@ class ApiService {
       throw Exception(data["error"] ?? "Failed to delete address");
     }
   }
+
+  Future<AppUpdateInfo> getAppUpdateInfo() async {
+    final res = await http.get(Uri.parse("$baseUrl/api/v1/app-update"));
+    final data = jsonDecode(res.body);
+    if (res.statusCode != 200 || data["success"] != true) {
+      throw Exception(data["error"] ?? "Failed to check updates");
+    }
+    return AppUpdateInfo.fromJson(data);
+  }
 }

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'api_service.dart';
 import 'inbox_screen.dart';
@@ -20,6 +22,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<TempAddress> addresses = [];
   bool loading = true;
   bool creating = false;
+  bool checkedForUpdates = false;
   int selectedDays = 1;
 
   @override
@@ -34,6 +37,75 @@ class _DashboardScreenState extends State<DashboardScreen> {
       addresses = saved;
       loading = false;
     });
+
+    if (!checkedForUpdates) {
+      checkedForUpdates = true;
+      await checkForUpdates();
+    }
+  }
+
+  Future<void> checkForUpdates() async {
+    try {
+      final update = await api.getAppUpdateInfo();
+      final packageInfo = await PackageInfo.fromPlatform();
+      final currentCode = int.tryParse(packageInfo.buildNumber) ?? 0;
+
+      if (!mounted ||
+          update.apkUrl.isEmpty ||
+          update.latestVersionCode <= currentCode) {
+        return;
+      }
+
+      showUpdateDialog(update);
+    } catch (_) {
+      // Update checks should never block the inbox when the user is offline.
+    }
+  }
+
+  Future<void> openUpdate(AppUpdateInfo update) async {
+    final uri = Uri.parse(update.apkUrl);
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened) {
+      showSnack("Could not open update link");
+    }
+  }
+
+  void showUpdateDialog(AppUpdateInfo update) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: !update.required,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0F172A),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
+          title: Text(
+            "Update ${update.latestVersionName} available",
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
+          content: Text(
+            update.message,
+            style: const TextStyle(color: Color(0xFFCBD5E1), height: 1.35),
+          ),
+          actions: [
+            if (!update.required)
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Later"),
+              ),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                openUpdate(update);
+              },
+              icon: const Icon(Icons.system_update_alt_rounded),
+              label: const Text("Update"),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> createAddress() async {

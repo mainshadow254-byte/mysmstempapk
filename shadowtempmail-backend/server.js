@@ -25,6 +25,18 @@ const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID;
 const CLOUDFLARE_WORKER_NAME =
   process.env.CLOUDFLARE_WORKER_NAME || "shadowtempmail-email-worker";
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
+const LATEST_ANDROID_VERSION_CODE = Number(
+  process.env.LATEST_ANDROID_VERSION_CODE || 2,
+);
+const LATEST_ANDROID_VERSION_NAME =
+  process.env.LATEST_ANDROID_VERSION_NAME || "1.0.1";
+const ANDROID_APK_URL =
+  process.env.ANDROID_APK_URL ||
+  "https://raw.githubusercontent.com/mainshadow254-byte/mysmstempapk/main/ShadowTempMail-release.apk";
+const UPDATE_REQUIRED = String(process.env.UPDATE_REQUIRED || "false") === "true";
+const UPDATE_MESSAGE =
+  process.env.UPDATE_MESSAGE ||
+  "A new ShadowTempMail update is available. Refresh the app to get the latest fixes.";
 
 const createLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -316,6 +328,18 @@ app.get("/api/v1/health", async (req, res) => {
       error: error.message,
     });
   }
+});
+
+app.get("/api/v1/app-update", (req, res) => {
+  res.json({
+    success: true,
+    platform: "android",
+    latestVersionCode: LATEST_ANDROID_VERSION_CODE,
+    latestVersionName: LATEST_ANDROID_VERSION_NAME,
+    required: UPDATE_REQUIRED,
+    message: UPDATE_MESSAGE,
+    apkUrl: ANDROID_APK_URL,
+  });
 });
 
 app.post("/api/v1/address", createLimiter, async (req, res) => {

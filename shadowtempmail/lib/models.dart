@@ -93,3 +93,29 @@ class MailMessage {
     );
   }
 }
+
+class AppUpdateInfo {
+  final int latestVersionCode;
+  final String latestVersionName;
+  final bool required;
+  final String message;
+  final String apkUrl;
+
+  AppUpdateInfo({
+    required this.latestVersionCode,
+    required this.latestVersionName,
+    required this.required,
+    required this.message,
+    required this.apkUrl,
+  });
+
+  factory AppUpdateInfo.fromJson(Map<String, dynamic> json) {
+    return AppUpdateInfo(
+      latestVersionCode: json['latestVersionCode'] ?? 0,
+      latestVersionName: json['latestVersionName'] ?? '',
+      required: json['required'] ?? false,
+      message: json['message'] ?? 'A new update is available.',
+      apkUrl: json['apkUrl'] ?? '',
+    );
+  }
+}
