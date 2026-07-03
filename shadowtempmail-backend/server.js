@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const rateLimit = require("express-rate-limit");
 const sanitizeHtml = require("sanitize-html");
 const cron = require("node-cron");
+const { simpleParser } = require("mailparser");
 const { pool, initDb } = require("./db");
 
 require("dotenv").config();
@@ -141,6 +142,151 @@ function extractVerificationCode(text) {
   }
 
   return null;
+}
+
+function decodeHtmlEntities(text) {
+  return String(text || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) =>
+      String.fromCharCode(parseInt(code, 16)),
+    );
+}
+
+function htmlToReadableText(html) {
+  if (!html) return "";
+
+  const withBreaks = String(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|h[1-6]|li|tr|table|section|article)>/gi, "\n")
+    .replace(
+      /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+      (_, href, label) => {
+        const cleanLabel = sanitizeHtml(label, {
+          allowedTags: [],
+          allowedAttributes: {},
+        }).trim();
+        return cleanLabel ? `${cleanLabel} [${href}]` : href;
+      },
+    );
+
+  return cleanupText(
+    sanitizeHtml(withBreaks, {
+      allowedTags: [],
+      allowedAttributes: {},
+      disallowedTagsMode: "discard",
+    }),
+  );
+}
+
+function decodeQuotedPrintable(text) {
+  const withoutSoftBreaks = String(text || "").replace(/=\r?\n/g, "");
+  const binary = withoutSoftBreaks.replace(/=([0-9a-f]{2})/gi, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16)),
+  );
+  return Buffer.from(binary, "binary").toString("utf8");
+}
+
+function cleanupText(text) {
+  let value = decodeHtmlEntities(String(text || ""));
+
+  if (/=[0-9a-f]{2}/i.test(value) || /=\r?\n/.test(value)) {
+    value = decodeQuotedPrintable(value);
+  }
+
+  value = value
+    .replace(/\r/g, "")
+    .replace(/^--[^\n]+$/gm, "")
+    .replace(/^Content-(Type|Transfer-Encoding|Disposition):.*$/gim, "")
+    .replace(/^MIME-Version:.*$/gim, "")
+    .replace(/^\s*charset=.*$/gim, "")
+    .replace(/^\s*boundary=.*$/gim, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return value;
+}
+
+function sanitizeEmailHtml(html) {
+  if (!html) return null;
+
+  return sanitizeHtml(html, {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img"]),
+    allowedAttributes: {
+      a: ["href", "name", "target"],
+      img: ["src", "alt"],
+    },
+    allowedSchemes: ["http", "https", "mailto"],
+  });
+}
+
+async function parseIncomingEmail({ from, to, subject, text, html, raw }) {
+  if (raw) {
+    try {
+      const parsed = await simpleParser(raw);
+      const parsedHtml = typeof parsed.html === "string" ? parsed.html : "";
+      return {
+        from: parsed.from?.text || from || "",
+        to: to || parsed.to?.text || "",
+        subject: parsed.subject || subject || "(No subject)",
+        text:
+          cleanupText(parsed.text || "") ||
+          htmlToReadableText(parsedHtml) ||
+          cleanupText(text || ""),
+        html: sanitizeEmailHtml(parsedHtml || html),
+        raw,
+      };
+    } catch (error) {
+      console.warn("Raw email parse failed, falling back to payload:", error);
+    }
+  }
+
+  return {
+    from: from || "",
+    to: to || "",
+    subject: subject || "(No subject)",
+    text: cleanupText(text || "") || htmlToReadableText(html || ""),
+    html: sanitizeEmailHtml(html),
+    raw: raw || "",
+  };
+}
+
+async function formatMessage(row) {
+  let textBody = cleanupText(row.text_body || "");
+  let htmlBody = row.html_body || null;
+
+  if (
+    row.raw_body &&
+    /Content-Type:|MIME-Version:|--|=\w{2}/i.test(row.raw_body)
+  ) {
+    try {
+      const parsed = await simpleParser(row.raw_body);
+      const parsedHtml = typeof parsed.html === "string" ? parsed.html : "";
+      textBody =
+        cleanupText(parsed.text || "") ||
+        htmlToReadableText(parsedHtml) ||
+        textBody;
+      htmlBody = sanitizeEmailHtml(parsedHtml) || htmlBody;
+    } catch (error) {
+      console.warn("Stored raw email parse failed:", error);
+    }
+  }
+
+  const { raw_body, ...message } = row;
+  return {
+    ...message,
+    text_body: textBody,
+    html_body: htmlBody,
+    code: extractVerificationCode(`${message.subject || ""}\n${textBody}`),
+  };
 }
 
 app.get("/", (req, res) => {
@@ -344,6 +490,7 @@ app.get("/api/v1/message/:messageId", async (req, res) => {
         m.subject,
         m.text_body,
         m.html_body,
+        m.raw_body,
         m.received_at,
         m.is_read
       FROM messages m
@@ -364,16 +511,11 @@ app.get("/api/v1/message/:messageId", async (req, res) => {
       messageId,
     ]);
 
-    const message = result.rows[0];
+    const message = await formatMessage(result.rows[0]);
 
     res.json({
       success: true,
-      message: {
-        ...message,
-        code: extractVerificationCode(
-          `${message.subject || ""}\n${message.text_body || ""}`,
-        ),
-      },
+      message,
     });
   } catch (error) {
     console.error("Message error:", error);
@@ -490,7 +632,9 @@ app.post("/api/v1/inbound/cloudflare", async (req, res) => {
       });
     }
 
-    const { from, to, subject, text, html, raw } = req.body;
+    const { from, to, subject, text, html, raw } = await parseIncomingEmail(
+      req.body,
+    );
 
     if (!to) {
       return res.status(400).json({
@@ -519,17 +663,6 @@ app.post("/api/v1/inbound/cloudflare", async (req, res) => {
       });
     }
 
-    const cleanHtml = html
-      ? sanitizeHtml(html, {
-          allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img"]),
-          allowedAttributes: {
-            a: ["href", "name", "target"],
-            img: ["src", "alt"],
-          },
-          allowedSchemes: ["http", "https", "mailto"],
-        })
-      : null;
-
     await pool.query(
       `
       INSERT INTO messages
@@ -551,7 +684,7 @@ app.post("/api/v1/inbound/cloudflare", async (req, res) => {
         recipient,
         subject || "(No subject)",
         text || "",
-        cleanHtml,
+        html || null,
         raw || "",
       ],
     );
