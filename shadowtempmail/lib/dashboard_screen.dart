@@ -48,7 +48,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         MaterialPageRoute(builder: (_) => InboxScreen(address: address)),
       ).then((_) => loadAddresses());
     } catch (e) {
-      showSnack("Failed to create email");
+      showSnack("Failed to create email: ${e.toString()}");
     } finally {
       if (mounted) setState(() => creating = false);
     }
